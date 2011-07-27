@@ -1,29 +1,25 @@
 #!/usr/bin/env python
 
-import sys, os, argparse
+# Python standard library
+import sys, os, argparse, cPickle
 
+# external libraries
 from numpy import unique
-from imio import read_image_stack, write_h5_stack
-from agglo import Rag
-from morpho import watershed, juicy_center
 from scipy.ndimage.filters import median_filter
 
-def read_image_stack_single_arg(fn):
-    """Read an image stack and print exceptions as they occur.
-    
-    argparse.ArgumentParser() subsumes exceptions when they occur in the 
-    argument type, masking lower-level errors. This function prints out the
-    error before propagating it up the stack.
-    """
-    try:
-        return read_image_stack(fn)
-    except Exception as err:
-        print err
-        raise
+# local modules
+from imio import read_image_stack, write_h5_stack, arguments as imioargs, \
+    read_image_stack_single_arg
+from agglo import Rag, classifier_probability, boundary_mean, random_priority, \
+    approximate_boundary_mean, arguments as aggloargs
+from morpho import watershed, juicy_center, arguments as morphoargs
+from classify import mean_and_sem, feature_set_a, RandomForest, \
+    arguments as classifyargs
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Segment a volume using a superpixel-to-RAG model.'
+        description='Segment a volume using a superpixel-to-RAG model.',
+        parents=[imioargs, morphoargs, aggloargs, classifyargs]
     )
     parser.add_argument('fin', nargs='+', 
         help='The boundary probability map file(s).'
@@ -31,48 +27,16 @@ if __name__ == '__main__':
     parser.add_argument('fout', 
         help='The output filename for the segmentation. Use %%str syntax.'
     )
-    parser.add_argument('-I', '--invert-image', action='store_true',
-        default=False,
-        help='Invert the probabilities before segmenting.'
-    )
-    parser.add_argument('-w', '--watershed', metavar='WS_FN',
-        type=read_image_stack_single_arg,
-        help='Use a precomputed watershed volume from file.'
-    )
-    parser.add_argument('-t', '--thresholds', nargs='+', default=[128],
-        type=float, metavar='FLOAT',
-        help='''The agglomeration thresholds. One output file will be written
-            for each threshold.'''
-    )
-    parser.add_argument('-l', '--ladder', type=int, metavar='SIZE',
-        help='Merge any bodies smaller than SIZE.'
-    )
-    parser.add_argument('-p', '--pre-ladder', action='store_true', default=True,
-        help='Run ladder before normal agglomeration (default).'
-    )
-    parser.add_argument('-L', '--post-ladder', 
-        action='store_false', dest='pre_ladder',
-        help='Run ladder after normal agglomeration instead of before (SLOW).'
-    )
-    parser.add_argument('-s', '--strict-ladder', type=int, metavar='INT', 
-        default=1,
-        help='''Specify the strictness of the ladder agglomeration. Level 1
-            (default): merge anything smaller than the ladder threshold as 
-            long as it's not on the volume border. Level 2: only merge smaller
-            bodies to larger ones. Level 3: only merge when the border is 
-            larger than or equal to 2 pixels.'''
-    )
-    parser.add_argument('-m', '--median-filter', action='store_true', 
-        default=False, help='Run a median filter on the input image.'
-    )
     parser.add_argument('-P', '--show-progress', action='store_true',
         default=True, help='Show a progress bar for the agglomeration.'
     )
-    parser.add_argument('-S', '--save-watershed', metavar='FILE',
-        help='Write the watershed result to FILE (overwrites).'
-    )
     parser.add_argument('-v', '--verbose', action='store_true', default=False,
         help='Print runtime information about execution.'
+    )
+    parser.add_argument('-o', '--objective-function', 
+        metavar='FCT_NAME', default='boundary_mean',
+        help='''Which merge priority function to use. Default: boundary_mean; 
+        choices: boundary_mean, approximate_boundary_mean'''
     )
     args = parser.parse_args()
 
@@ -99,8 +63,16 @@ if __name__ == '__main__':
         ('('+','.join(map(str,args.watershed.shape))+')',
         '('+','.join(map(str,probs.shape))+')')
     )
+    if args.load_classifier is not None:
+        mpf = classifier_probability(eval(args.feature_map_function), 
+                                                        args.load_classifier)
+    else:
+        mpf = eval(args.objective_function)
 
-    g = Rag(args.watershed, probs, show_progress=args.show_progress)
+    g = Rag(args.watershed, probs, show_progress=args.show_progress, 
+        merge_priority_function=mpf, 
+        allow_shared_boundaries=args.allow_shared_boundaries,
+        lowmem=args.low_memory)
 
     vfn.write('RAG computed. Number of nodes: %i, Number of edges: %i\n'%
         (g.number_of_nodes(), g.number_of_edges())
@@ -120,10 +92,41 @@ if __name__ == '__main__':
     for t in args.thresholds:
         g.agglomerate(t)
         if args.ladder is not None and args.post_ladder:
-            g2 = g.copy()
+            if len(args.thresholds) > 1:
+                g2 = g.copy()
+            else:
+                g2 = g
             g2.agglomerate_ladder(args.ladder, args.strict_ladder)
         else:
             g2 = g
-        write_h5_stack(juicy_center(g2.segmentation, 2), args.fout % t)
+        try:
+            write_h5_stack(g2.get_segmentation(), args.fout % t)
+        except TypeError:
+            write_h5_stack(g2.get_segmentation(), args.fout)
+            if len(args.thresholds) > 1:
+                sys.stdout.write(
+                    '\nWarning: single output file but multiple thresholds '+
+                    'provided. What should I do? (q: quit, first threshold '+
+                    'written to file; t: give specific threshold, written '+
+                    'to file; f: new filename, provide new filename for '+
+                    'output.\n'
+                )
+                response = sys.stdin.readline()[0]
+                if response == 'q':
+                    break
+                elif response == 't':
+                    sys.stdout.write('which threshold?\n')
+                    t = double(sys.stdin.readline()[:-1])
+                    g.agglomerate(t)
+                    if args.ladder is not None and args.post_ladder:
+                        g.agglomerate_ladder(args.ladder, args.strict_ladder)
+                    os.remove(args.fout)
+                    write_h5_stack(g.get_segmentation(), args.fout)
+                elif response == 'f':
+                    args.fout = sys.stdin.readline()[:-1]
+                    continue
+                else:
+                    sys.stdout.write('Unknown response: quitting.\n')
+                    break
     g.merge_queue.finish()
 

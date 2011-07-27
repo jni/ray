@@ -5,20 +5,35 @@ from numpy import   shape, reshape, \
                     array, zeros, zeros_like, ones, ones_like, arange, \
                     double, \
                     int8, int16, int32, int64, uint8, uint16, uint32, uint64, \
-                    iinfo, \
+                    iinfo, isscalar, \
                     unique, \
                     where, unravel_index, newaxis, \
                     ceil, floor, prod, cumprod, \
                     concatenate
 import itertools
 from collections import deque as queue
-from scipy.ndimage import filters, measurements
+from scipy.ndimage import filters
+from scipy.ndimage.measurements import label
 #from scipy.spatial.distance import cityblock as manhattan_distance
 import iterprogress as ip
-
-from imio import read_image_stack, write_h5_stack
+import imio
 
 zero3d = array([0,0,0])
+
+arguments = argparse.ArgumentParser(add_help=False)
+arggroup = arguments.add_argument_group('Morphological operations options')
+arggroup.add_argument('-S', '--save-watershed', metavar='FILE',
+    help='Write the watershed result to FILE (overwrites).'
+)
+arggroup.add_argument('-w', '--watershed', metavar='WS_FN',
+    type=imio.read_image_stack_single_arg,
+    help='Use a precomputed watershed volume from file.'
+)
+arggroup.add_argument('--seed', metavar='FN', 
+    type=imio.read_image_stack_single_arg,
+    help='''use the volume in FN to seed the watershed. By default, connected
+        components of 0-valued pixels will be used as the seeds.'''
+)
 
 def manhattan_distance(a, b):
     return sum(abs(a-b))
@@ -34,8 +49,13 @@ def diamondse(sz, dimension):
     return se
 
 
-def watershed(a, show_progress=False):
-    ws = zeros(shape(a), uint32)
+def watershed(a, seeds=None, show_progress=False):
+    seeded = seeds is not None
+    if not seeded:
+        ws = zeros(shape(a), uint32)
+    else:
+        ws = seeds
+    levels = unique(a)
     a = pad(a, a.max()+1)
     ws = pad(ws, 0)
     maxlabel = iinfo(ws.dtype).max
@@ -44,14 +64,14 @@ def watershed(a, show_progress=False):
     neighbors = build_neighbors_array(a)
     level_pixels = build_levels_dict(a)
     if show_progress:
-        def with_progress(it): 
+        def with_progress(it, *args, **kwargs): 
             return ip.with_progress(
-                it, pbar=ip.StandardProgressBar('Watershed... ')
+                it, *args, pbar=ip.StandardProgressBar('Watershed...'), **kwargs
             )
     else:
-        def with_progress(it):
-            return ip.with_progress(it, pbar=ip.NoProgressBar())
-    for level in with_progress(sorted(level_pixels.keys())[:-1]):
+        def with_progress(it, *args, **kwargs):
+            return ip.with_progress(it, *args,pbar=ip.NoProgressBar(),**kwargs)
+    for i, level in with_progress(enumerate(levels), length=len(levels)):
         idxs_adjacent_to_labels = queue([idx for idx in level_pixels[level] if
                                             any(ws.ravel()[neighbors[idx]])])
         while len(idxs_adjacent_to_labels) > 0:
@@ -67,10 +87,16 @@ def watershed(a, show_progress=False):
                 ns = neighbors[idx]
                 idxs_adjacent_to_labels.extend(ns[((ws.ravel()[ns] == 0) * 
                                     (a.ravel()[ns] == level)).astype(bool) ])
-        new_labels, num_new = measurements.label((ws == 0) * (a == level), sel)
-        new_labels = (current_label + new_labels) * (new_labels != 0)
-        current_label += num_new
-        ws += new_labels
+        if seeded:
+            if i+1 < len(levels):
+                not_adj = where((ws.ravel() == 0) * (a.ravel() == level))[0]
+                level_pixels[levels[i+1]].extend(not_adj)
+                a.ravel()[not_adj] = levels[i+1]
+        else:
+            new_labels, num_new = label((ws == 0) * (a == level), sel)
+            new_labels = (current_label + new_labels) * (new_labels != 0)
+            current_label += num_new
+            ws += new_labels
     ws[ws==maxlabel] = 0
     return juicy_center(ws)
 
@@ -134,36 +160,31 @@ def pad(ar, vals):
         return pad(ar2, vals[1:])
         
 def juicy_center(ar, skinsize=1):
-    center_shape = array(ar.shape)-2*skinsize
-    selector = ones_like(ar).astype(bool)
     for i in xrange(ar.ndim):
-        selector.swapaxes(0,i)[0:skinsize,...] = False
-        selector.swapaxes(0,i)[-1:-skinsize-1:-1,...] = False
-    return ar[selector].reshape(center_shape)
+        ar = ar.swapaxes(0,i)
+        ar = ar[skinsize:-skinsize]
+        ar = ar.swapaxes(0,i)
+    return ar
 
 def build_levels_dict(a):
-    return dict( ((l, where(a.ravel()==l)[0]) for l in unique(a)) )
+    return dict( ((l, list(where(a.ravel()==l)[0])) for l in unique(a)) )
 
 def build_neighbors_array(ar):
-    indices_vect = arange(ar.size, dtype=uint32)
+    idxs = arange(ar.size, dtype=uint32)
+    return get_neighbor_idxs(ar, idxs)
+
+def get_neighbor_idxs(ar, idxs):
+    if isscalar(idxs): # in case only a single idx is given
+        idxs = [idxs]
+    idxs = array(idxs) # in case a list or other array-like is given
     steps = array(ar.strides)/ar.itemsize
     steps = concatenate((steps, -steps))
-    return indices_vect[:,newaxis] + steps
-
-def neighbor_idxs(idx, steps, arrayshape):
-    idx = array(idx)
-    neighbors = itertools.chain(*[[idx+step, idx-step] for step in steps])
-    return [tuple(n) for n in neighbors if all(n >= zero3d) and 
-                                           all(n < arrayshape)]
-
-def neighbor_idxs_no_check(idx, steps, arrayshape):
-    idx = array(idx)
-    neighbors = itertools.chain(*[[idx+step, idx-step] for step in steps])
-    return map(tuple, neighbors)
+    return idxs[:,newaxis] + steps
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
+        parents=[arguments],
         description='Watershed transform an image volume.'
     )
     parser.add_argument('fin', nargs='+',
@@ -184,14 +205,16 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
 
-    v = read_image_stack(*args.fin)
+    v = imio.read_image_stack(*args.fin)
     if args.invert_image:
         v = v.max() - v
     if args.median_filter:
         v = filters.median_filter(v, 3)
     if args.gaussian_filter is not None:
         v = filters.gaussian_filter(v, args.gaussian_filter)
-    ws = watershed(v, show_progress=args.show_progress)
+    if args.seed is not None:
+        args.seed, _ = label(args.seed == 0, diamondse(3, args.seed.ndim))
+    ws = watershed(v, seeds=args.seed, show_progress=args.show_progress)
     if os.access(args.fout, os.F_OK):
         os.remove(args.fout)
-    write_h5_stack(ws, args.fout)
+    imio.write_h5_stack(ws, args.fout)

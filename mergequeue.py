@@ -12,6 +12,7 @@ class MergeQueue(object):
         self.original_length = self.num_valid_items
         self.q = items
         heapify(self.q)
+        self.is_null_queue = len(items) == 0
         if with_progress:
             self.pbar = StandardProgressBar(prog_title)
         else:
@@ -22,6 +23,9 @@ class MergeQueue(object):
 
     def finish(self):
         self.pbar.finish()
+
+    def is_empty(self):
+        return len(self.q) == 0
 
     def peek(self):
         return self.q[0]
@@ -38,6 +42,11 @@ class MergeQueue(object):
         return heappop(self.q)
 
     def push(self, item):
+        self.is_null_queue = False
+        self.push = self.push_next
+        self.push_next(item)
+
+    def push_next(self, item):
         heappush(self.q, item)
         self.num_valid_items += 1
 
