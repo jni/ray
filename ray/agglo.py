@@ -3,15 +3,13 @@ from itertools import combinations, izip, repeat, product
 import argparse
 import random
 import sys
-import logging
-from copy import deepcopy
 
 # libraries
 #import matplotlib.pyplot as plt
 from numpy import array, mean, zeros, zeros_like, uint8, int8, where, unique, \
     finfo, size, double, transpose, newaxis, uint32, nonzero, median, exp, \
     log2, float, ones, arange, inf, flatnonzero, intersect1d, dtype, squeeze, \
-    sign, concatenate, bincount, __version__ as numpyversion
+    __version__ as numpyversion
 from scipy.stats import sem
 from scipy.sparse import lil_matrix
 from scipy.misc import comb as nchoosek
@@ -25,9 +23,9 @@ import morpho
 import iterprogress as ip
 from ncut import ncutW
 from mergequeue import MergeQueue
-from evaluate import contingency_table, split_voi, xlogx
+from evaluate import contingency_table, split_voi
 from classify import NullFeatureManager, MomentsFeatureManager, \
-    HistogramFeatureManager, RandomForest
+    HistogramFeatureManager
 
 arguments = argparse.ArgumentParser(add_help=False)
 arggroup = arguments.add_argument_group('Agglomeration options')
@@ -83,7 +81,8 @@ class Rag(Graph):
     def __init__(self, watershed=array([]), probabilities=array([]), 
             merge_priority_function=None, allow_shared_boundaries=True,
             gt_vol=None, feature_manager=MomentsFeatureManager(), 
-            show_progress=False, lowmem=False, connectivity=1):
+            show_progress=False, lowmem=False, connectivity=1,
+            channel_is_oriented=None, orientation_map=array([])):
         """Create a graph from a watershed volume and image volume.
         
         The watershed is assumed to have dams of label 0 in between basins.
@@ -99,6 +98,7 @@ class Rag(Graph):
             self.merge_priority_function = merge_priority_function
         self.set_watershed(watershed, lowmem, connectivity)
         self.set_probabilities(probabilities)
+        self.set_orientations(orientation_map, channel_is_oriented)
         if watershed is None:
             self.ucm = None
         else:
@@ -205,7 +205,7 @@ class Rag(Graph):
         padding = [inf]+(self.pad_thickness-1)*[0]
         if p_ndim == w_ndim:
             self.probabilities = morpho.pad(probs, padding)
-            self.probabilities_r = self.probabilities.ravel()
+            self.probabilities_r = self.probabilities.ravel()[:,newaxis]
         elif p_ndim == w_ndim+1:
             if sp[1:] == sw:
                 sp = sp[1:]+[sp[0]]
@@ -214,7 +214,33 @@ class Rag(Graph):
             self.probabilities = morpho.pad(probs, padding, axes)
             self.probabilities_r = self.probabilities.reshape(
                                                 (self.watershed.size, -1))
-  
+                
+    def set_orientations(self, orientation_map, channel_is_oriented):
+        if len(orientation_map) == 0:
+            self.orientation_map = zeros_like(self.watershed)
+            self.orientation_map_r = self.orientation_map.ravel()
+        so = orientation_map.shape
+        sw = tuple(array(self.watershed.shape, dtype=int)-\
+                2*self.pad_thickness*ones(self.watershed.ndim, dtype=int))
+        o_ndim = orientation_map.ndim
+        w_ndim = self.watershed.ndim
+        padding = [0]+(self.pad_thickness-1)*[0]
+        self.orientation_map = morpho.pad(orientation_map, padding).astype(int)
+        self.orientation_map_r = self.orientation_map.ravel()
+        if channel_is_oriented is None:
+            nchannels = 1 if self.probabilities.ndim==self.watershed.ndim \
+                else self.probabilities.shape[-1]
+            self.channel_is_oriented = array([False]*nchannels)
+            self.max_probabilities_r = zeros_like(self.probabilities_r)
+            self.oriented_probabilities_r = zeros_like(self.probabilities_r)
+        else:
+            self.channel_is_oriented = channel_is_oriented
+            self.max_probabilities_r = self.probabilities_r[:,self.channel_is_oriented].max(axis=1)
+            self.oriented_probabilities_r = self.probabilities_r[:,self.channel_is_oriented]
+            self.oriented_probabilities_r = self.oriented_probabilities_r[
+                range(self.oriented_probabilities_r.shape[0]), self.orientation_map_r]
+ 
+
     def set_watershed(self, ws=array([]), lowmem=False, connectivity=1):
         try:
             self.boundary_body = ws.max()+1
@@ -360,117 +386,70 @@ class Rag(Graph):
             g.merge_node_list(cc)
         return g.get_segmentation()
 
-    def learn_agglomerate(self, gts, feature_map, min_num_samples=1,
-                                                            *args, **kwargs):
+    def learn_agglomerate(self, gts, feature_map_function, min_num_samples=1,
+                                                *args, **kwargs):
         """Agglomerate while comparing to ground truth & classifying merges."""
-        mode = kwargs.get('mode', 'forbidden')
-        if not 'forbidden' in mode and not 'voi-sign' in mode:
-            if type(mode) == list: mode.append('forbidden')
-            else: mode = [mode, 'forbidden']
-        max_numcycles = kwargs.get('max_numcycles', 10)
+        # Compute data for all ground truths
         if type(gts) != list:
             gts = [gts] # allow using single ground truth as input
-        ctables = [contingency_table(self.get_segmentation(), gt) for gt in gts]
-        master_ctables = ctables
-        data = []
-        for numcycles in range(max_numcycles):
-            if 'forbidden' not in mode: 
-                ctables = deepcopy(master_ctables)
-            if sum(map(len, [d[0] for d in data])) > min_num_samples:
-                break
+        cnt = []
+        assignment = []
+        for gt in gts:
+            cnt.append(contingency_table(self.get_segmentation(), gt))
+            assignment.append(cnt[-1] == cnt[-1].max(axis=1)[:,newaxis])
+        hard_assignment = reduce(
+            intersect1d, [where(a.sum(axis=1) > 1)[0] for a in assignment])
+        # 'hard assignment' nodes are nodes that have most of their overlap
+        # with the 0-label in gt, or that have equal amounts of overlap between
+        # two other labels
+        # to be a hard assigment, must be hard in all ground truth segmentations
+        features, labels, weights, history = [], [], [], []
+        while len(features) < min_num_samples:
             g = self.copy()
-            if 'on-policy' in mode:
-                g.merge_priority_function = boundary_mean
-            else:
-                g.merge_priority_function = random_priority
-            if numcycles > 0 and ('active' in mode or 'on-policy' in mode):
-                cl = kwargs.get('classifier', RandomForest(100))
-                cl = cl.fit(*data[0][:2])
-                if type(cl) == RandomForest:
-                    logging.info('classifier oob error: %.2f'%cl.oob)
-                g.merge_priority_function = \
-                                        classifier_probability(feature_map, cl)
             g.show_progress = False # bug in MergeQueue usage causes
                                     # progressbar crash.
             g.rebuild_merge_queue()
-            data.append(g._learn_agglomerate(ctables, feature_map, mode))
-            data = self._unique_learning_data_elements(data)
-            logging.debug('data size: %d'%len(data[0][0])) #DBG
-        return data[0]
+            while len(g.merge_queue) > 0:
+                merge_priority, valid, n1, n2 = g.merge_queue.pop()
+                if valid:
+                    features.append(feature_map_function(g, n1, n2).ravel())
+                    if n2 in hard_assignment:
+                        n1, n2 = n2, n1
+                    # Calculate weights for weighting data points
+                    history.append([n1, n2])
+                    s1, s2 = [len(g.node[n]['extent']) for n in [n1, n2]]
+                    weights.append(
+                        (compute_local_voi_change(s1, s2, g.volume_size),
+                        compute_local_rand_change(s1, s2, g.volume_size))
+                    )
 
-    def _unique_learning_data_elements(self, data):
-        f, l, w, h = map(concatenate, zip(*data))
-        af = f.view('|S%d'%(f.itemsize*(len(f[0]))))
-        _, uids, iids = unique(af, return_index=True, return_inverse=True)
-        bcs = bincount(iids) #DBG
-        logging.debug( #DBG
-            'repeat feature vec min %d, mean %.2f, median %.2f, max %d.' %
-            (bcs.min(), mean(bcs), median(bcs), bcs.max())
-        )
-        def get_uniques(ar): return ar[uids]
-        return [map(get_uniques, [f, l, w, h])]
-
-
-    def _learn_agglomerate(self, ctables, feature_map, mode='forbidden'):
-        """Learn the agglomeration process using various strategies.
-
-        Arguments:
-            - one or more contingency tables between own segments and gold
-            standard segmentations
-            - a feature map function {Graph, node1, node2} |--> array([float])
-            [- a learning mode]
-
-        Value:
-            A learning data matrix of shape 
-            [n_training_examples x (n_features + 5)]. The elements after the
-            features are the label, the approximate magnitude of the VOI 
-            change, the approximate magnitude of the Rand index change, and
-            the two nodes that were sampled.
-
-        Possible modes:
-            - forbidden: assign automatic regions to gold standard segments.
-            Any region pairs assigned to different gs segments are used as
-            training examples but never merged.
-            - voi-sign: compute the voi change resulting from merging candidate
-            regions. Use the sign of the change as the training label. Merge
-            regardless of label.
-        """
-        if 'forbidden' in mode:
-            assignments = []
-            for ctable in ctables:
-                assignments.append(ctable == ctable.max(axis=1)[:,newaxis])
-        g = self
-        features, labels, weights, history = [], [], [], []
-        while len(g.merge_queue) > 0:
-            merge_priority, valid, n1, n2 = g.merge_queue.pop()
-            if valid:
-                features.append(feature_map(g, n1, n2).ravel())
-                # Calculate weights for weighting data points
-                history.append([n1, n2])
-                s1, s2 = [len(g.node[n]['extent']) for n in [n1, n2]]
-                weights.append(
-                    (compute_local_voi_change(s1, s2, g.volume_size),
-                    compute_local_rand_change(s1, s2, g.volume_size))
-                )
-                # Get the fraction of times that n1 and n2 assigned to 
-                # same segment in the ground truths
-                if 'forbidden' in mode:
-                    together = \
-                        [(-1)**(a[n1,:]==a[n2,:]).all() for a in assignments]
-                elif 'voi-sign' in mode:
-                    together = [compute_true_delta_voi(ctable, n1, n2) for 
-                                                            ctable in ctables]
-                label = sign(mean(together))
-                labels.append(label)
-                if label != label:
-                    raise RuntimeError('NaN label found.')
-                if 'forbidden' not in mode or label < 0:
-                    for ctable in ctables:
-                        ctable[n1] += ctable[n2]
-                        ctable[n2] = 0
-                    g.merge_nodes(n1, n2)
-        return (array(features).astype(double), array(labels),
-            array(weights), array(history))
+                    # If n1 is a hard assignment and one of the segments it's
+                    # assigned to is n2 in some ground truth
+                    if False and n1 in hard_assignment and \
+                        any([(a[n1,:] * a[n2,:]).any() for a in assignment]):
+                        m = boundary_mean(g, n1, n2)
+                        ms = [boundary_mean(g, n1, n) for n in 
+                                                            g.neighbors(n1)]
+                        # Only merge them if n1 boundary mean is minimum for n2
+                        if m == min(ms):
+                            g.merge_nodes(n2, n1)
+                            labels.append(-1)
+                        else:
+                            _ = features.pop() # remove last item
+                            _ = history.pop()
+                            _ = weights.pop()
+                    else:
+                        # Get the fraction of times that n1 and n2 assigned to 
+                        # same segment in the ground truths
+                        together = [(a[n1,:]==a[n2,:]).all() 
+                                                        for a in assignment]
+                        if sum(together)/float(len(together)) > 0.5:
+                            g.merge_nodes(n1, n2)
+                            labels.append(-1)
+                        else:
+                            labels.append(1)
+        return array(features).astype(double), array(labels), array(weights), \
+                                            array(history)
 
     def replay_merge_history(self, merge_seq, labels=None, num_errors=1):
         """Agglomerate according to a merge sequence, optionally labeled.
@@ -841,16 +820,6 @@ def compute_local_voi_change(s1, s2, n):
     py = py1+py2
     return -(py1*log2(py1) + py2*log2(py2) - py*log2(py))
     
-def compute_true_delta_voi(ctable, n1, n2):
-    p1 = ctable[n1].sum()
-    p2 = ctable[n2].sum()
-    p3 = p1+p2
-    p1g_log_p1g = xlogx(ctable[n1]).sum()
-    p2g_log_p2g = xlogx(ctable[n2]).sum()
-    p3g_log_p3g = xlogx(ctable[n1]+ctable[n2]).sum()
-    return p3*log2(p3) - p1*log2(p1) - p2*log2(p2) - \
-                                2*(p3g_log_p3g - p1g_log_p1g - p2g_log_p2g)
-
 def expected_change_rand(feature_extractor, classifier, alpha=1.0, beta=1.0):
     prob_func = classifier_probability(feature_extractor, classifier)
     def predict(g, n1, n2):
