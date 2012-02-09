@@ -150,9 +150,9 @@ class ConstellationFeatureManager(NullFeatureManager):
 		x = x2 - x1
 		y = y2 - y1
         
-		zext1 = this.z_extent(node1_idxs)
-		zext2 = this.z_extent(node2_idxs)
-		zovlp = this.z_overlap(zext1, zext2)
+		zext1 = self.z_extent(node1_idxs)
+		zext2 = self.z_extent(node2_idxs)
+		zovlp = self.z_overlap(zext1, zext2)
 
 		return x, y, zovlp
 
