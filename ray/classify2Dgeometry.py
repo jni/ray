@@ -100,7 +100,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 		# c)
 		#      *-----*
 		#  @-------------@
-		if ze2[1] <= ze1[1]:
+		if ze2[1] < ze1[1]:
 			return self.z_overlap(ze2, ze1)
 		elif ze2[0] > ze1[1]:
 			# Case a
