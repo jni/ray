@@ -41,28 +41,31 @@ class QuickProfiler(object):
 	logTic = 0
 	logInterval = None
 	
-	def __init__(self, logFile = None, interval = 15000):
+	def __init__(self, logFile = None, interval = 1000):
 		if logFile is None:
 			logFile = 'pyprof.txt'
 		self.logHandle = open(logFile, 'w')
 		self.ticd = dict()
 		self.tcnt = dict()
 		self.tprof = dict()
-		self.logInterval = interval
+		self.logInterval = interval		
 		return
+		
+	def __del__(self):
+		self.log()
 	
 	def getMillis(self):
 		t = time.time()
 		return t * 1000
 	
-	def tic(self, strid):		
+	def tic(self, strid):				
 		t = self.getMillis()
 		self.ticd[strid] = t
 		if self.logTic == 0:
 			self.logTic = t
 		return
 		
-	def toc(self, strid):
+	def toc(self, strid):		
 		t = self.getMillis()
 		if strid in self.tcnt.keys():
 			self.tcnt[strid] += 1
@@ -83,7 +86,7 @@ class QuickProfiler(object):
 	def log(self):
 		logstr = "{keyid} for {ms} milliseconds after {cnt} trials"
 		for key in self.tprof.keys():
-			self.logHandle.write(logstr.format(keyid = key, ms = self.tprof[key], cnt = self.tcnt[key]))
+			self.logHandle.write(logstr.format(keyid = key, ms = self.tprof[key], cnt = self.tcnt[key]) + "\n")
 			print logstr.format(keyid = key, ms = self.tprof[key], cnt = self.tcnt[key])
 		print ""
 		self.logHandle.write("\n")
@@ -99,18 +102,21 @@ class ConstellationFeatureManager(NullFeatureManager):
 	def calculate_constellation(self, g, n, ctr):
 		self.profiler.tic("constellation")
 		if ctr is None:
-			ctr = g.node[n][self.default_cache]
+			ctr = g.node[n][self.default_cache][1][0:1]
+		
+		if len(ctr) > 2:
+			ctr = ctr[0:1]
 		
 		# nbd_idx indexes all nodes that share an edge with this one (i hope)	
 		nbd_idx = g[n].keys()
 		# init some arrays
-		nbd_offset = zeros(len(g[n].keys()), 2)
-		nbd_size = zeros(len(g[n].keys()), 1)
+		nbd_offset = zeros([len(g[n].keys()), 2])
+		nbd_size = zeros([len(g[n].keys()), 1])
 		
 		# collect centroid offsets and sizes
 		for i in arange(0,len(nbd_idx)):
 			neighbor = nbd_idx[i]
-			n_ctr = g.node[neighbor][self.default_cache]
+			n_ctr = g.node[neighbor][self.default_cache][1][0:1]
 			nbd_offset[i,:] = ctr - n_ctr
 			nbd_size[i] = len(g.node[neighbor]['extent'])
 		# sort by order around this node
@@ -128,7 +134,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 			nbd_offset = nbd_offset[i_sort_sz,:]
 		else:
 			pad = zeros((self.consize - len(nbd_idx), 2))
-			nbd_offset = concatenate((ndb_offset, pad))
+			nbd_offset = concatenate((nbd_offset, pad))
 		
 		self.profiler.toc("constellation")	
 			
@@ -215,7 +221,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 		self.__makeMeshGrids()
 		self.constellation_diff = self.constellation_meansq
 		self.profiler = QuickProfiler("ConstellationProfile.txt")
-		print "Re-init 1"
+		
 		
 	def __len__(self):
 		return 1
@@ -227,29 +233,33 @@ class ConstellationFeatureManager(NullFeatureManager):
 		idxs = np.remainder(node_idxs, len(self.grids_r[0]))
 		x = mean(self.grids_r[0][idxs])
 		y = mean(self.grids_r[1][idxs])
-		return x, y
+		return array([x, y])
 
 	def create_node_cache(self, g, n):
 		self.profiler.tic("createnode")
-		node_idxs = list(g.node[n]['extent'])
+		node_idxs = array(list(g.node[n]['extent']))
 		ret =  np.append(self.calculate_centroid(node_idxs), self.z_extent(node_idxs))
 		self.profiler.toc("createnode")
 		return ret
 
 	def create_edge_cache(self, g, n1, n2):
-		self.profiler.tic("createedge")
-		node1_idxs = list(g.node[n1]['extent'])
-		node2_idxs = list(g.node[n2]['extent'])
-		x1, y1 = self.calculate_centroid(node1_idxs)
-		x2, y2 = self.calculate_centroid(node2_idxs)
-		x = x2 - x1
-		y = y2 - y1
-        
-		zext1 = self.z_extent(node1_idxs)
-		zext2 = self.z_extent(node2_idxs)
+		self.profiler.tic("createedge")		
+		
+		if self.default_cache in g.node[n1]:
+			zext1 = g.node[n1][self.default_cache][1][2:4]
+		else:
+			node1_idxs = list(g.node[n1]['extent'])
+			zext1 = self.z_extent(node1_idxs)
+			
+		if self.default_cache in g.node[n2]:
+			zext2 = g.node[n2][self.default_cache][1][2:4]
+		else:
+			node2_idxs = list(g.node[n2]['extent'])
+			zext2 = self.z_extent(node2_idxs)
+			
 		zovlp = self.z_overlap(zext1, zext2)
-		self.profiler.toc("createedge")
-		return x, y, zovlp
+		self.profiler.toc("createedge")		
+		return array([zovlp])
 
 	# Super way not efficient, but simpler for testing this thing
 	# TODO: use existing cache to calculate new centroid
@@ -272,17 +282,17 @@ class ConstellationFeatureManager(NullFeatureManager):
 
 	def compute_edge_features(self, g, n1, n2, cache=None):		
 		if cache is None:
-			cache = g[n1][n2][self.default_cache]		
-		return cache[2]
+			cache = g[n1][n2][self.default_cache][1]
+		return cache
 
 	def compute_difference_features(self,g, n1, n2, cache1=None, cache2=None):
 		if cache1 is None:
-			cache1 = g.node[n1][self.default_cache]		
+			cache1 = g.node[n1][self.default_cache][1]		
 
 		if cache2 is None:
-			cache2 = g.node[n2][self.default_cache]		
+			cache2 = g.node[n2][self.default_cache][1]
 		
 		con1 = self.compute_node_features(g, n1, cache1)
 		con2 = self.compute_node_features(g, n2, cache2)
 		
-		return self.constellation_diff(con1, con2)
+		return array([self.constellation_diff(con1, con2)])
