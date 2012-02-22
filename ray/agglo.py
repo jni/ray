@@ -994,10 +994,14 @@ def classifier_probability(feature_extractor, classifier):
         if n1 == g.boundary_body or n2 == g.boundary_body:
             return inf
         features = feature_extractor(g, n1, n2)
+
         try:
             prediction = classifier.predict_proba(features)[0,1]
         except AttributeError:
             prediction = classifier.predict(features)[0]
+        except RuntimeError as re:
+			g.dbgInfo = features, sys.exc_info()
+			raise re
         return prediction
     return predict
 

@@ -49,15 +49,28 @@ import iterprogress as ip
 from imio import read_h5_stack, write_h5_stack, write_image_stack
 from adaboost import AdaBoost
 
+from IPython.Debugger import Tracer
+
+keyboard = Tracer()
+
 class NullFeatureManager(object):
+	
+	
+	
     def __init__(self, *args, **kwargs):
         self.default_cache = 'feature-cache'
+        self.dbon = False
+        
     def __len__(self, *args, **kwargs):
         return 0
     def __call__(self, g, n1, n2=None):
         return self.compute_features(g, n1, n2)
 
     def compute_features(self, g, n1, n2=None):
+		
+        if self.dbon:
+            keyboard()
+
         if n2 is None:
             c1 = g.node[n1][self.default_cache]
             return self.compute_node_features(g, n1, c1)
