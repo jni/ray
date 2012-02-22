@@ -33,6 +33,10 @@ from imio import read_h5_stack, write_h5_stack, write_image_stack
 from adaboost import AdaBoost
 from classify import NullFeatureManager
 
+from IPython.Debugger import Tracer
+
+keyboard = Tracer()
+
 class QuickProfiler(object):
 	ticd = None
 	tcnt = None
@@ -41,7 +45,7 @@ class QuickProfiler(object):
 	logTic = 0
 	logInterval = None
 	
-	def __init__(self, logFile = None, interval = 1000):
+	def __init__(self, logFile = None, interval = 15000):
 		if logFile is None:
 			logFile = 'pyprof.txt'
 		self.logHandle = open(logFile, 'w')
@@ -221,10 +225,11 @@ class ConstellationFeatureManager(NullFeatureManager):
 		self.__makeMeshGrids()
 		self.constellation_diff = self.constellation_meansq
 		self.profiler = QuickProfiler("ConstellationProfile.txt")
+		self.dbgDict = dict()
 		
 		
 	def __len__(self):
-		return 1
+		return 0
 
 	def constellation_meansq(self, con1, con2):
 		return mean(con1 * con1 - con2 * con2)
@@ -240,6 +245,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 		node_idxs = array(list(g.node[n]['extent']))
 		ret =  np.append(self.calculate_centroid(node_idxs), self.z_extent(node_idxs))
 		self.profiler.toc("createnode")
+		
 		return ret
 
 	def create_edge_cache(self, g, n1, n2):
@@ -259,7 +265,12 @@ class ConstellationFeatureManager(NullFeatureManager):
 			
 		zovlp = self.z_overlap(zext1, zext2)
 		self.profiler.toc("createedge")		
-		return array([zovlp])
+		
+		ret = array([zovlp])
+		
+		if not 'cec' in self.dbgDict.keys():
+			self.dbgDict['cec'] = ret
+		return ret
 
 	# Super way not efficient, but simpler for testing this thing
 	# TODO: use existing cache to calculate new centroid
@@ -278,21 +289,32 @@ class ConstellationFeatureManager(NullFeatureManager):
 	def compute_node_features(self, g, n, cache=None):
 		if cache is None: 
 			cache = g.node[n][self.default_cache]		
-		return self.calculate_constellation(g, n, cache).ravel()
+		ret = self.calculate_constellation(g, n, cache).ravel()
+		if not 'cnf' in self.dbgDict.keys():
+			self.dbgDict['cnf'] = ret
+		return ret
 
 	def compute_edge_features(self, g, n1, n2, cache=None):		
+		
 		if cache is None:
-			cache = g[n1][n2][self.default_cache][1]
+			cache = g[n1][n2][self.default_cache]
+		if not 'cef' in self.dbgDict.keys():
+			self.dbgDict['cef'] = cache		
 		return cache
 
-	def compute_difference_features(self,g, n1, n2, cache1=None, cache2=None):
+	def compute_difference_features(self,g, n1, n2, cache1=None, cache2=None):		
 		if cache1 is None:
-			cache1 = g.node[n1][self.default_cache][1]		
+			cache1 = g.node[n1][self.default_cache]
 
 		if cache2 is None:
-			cache2 = g.node[n2][self.default_cache][1]
+			cache2 = g.node[n2][self.default_cache]
 		
 		con1 = self.compute_node_features(g, n1, cache1)
 		con2 = self.compute_node_features(g, n2, cache2)
 		
-		return array([self.constellation_diff(con1, con2)])
+		ret = array([self.constellation_diff(con1, con2)])
+		
+		if not 'cdf' in self.dbgDict.keys():
+			self.dbgDict['cdf'] = ret
+		
+		return ret
