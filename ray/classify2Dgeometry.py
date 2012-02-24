@@ -95,6 +95,26 @@ class QuickProfiler(object):
 		print ""
 		self.logHandle.write("\n")
 		return
+		
+class NullProfiler(QuickProfiler):
+	tic = 0.0
+	
+	def __init__(self, *args):
+		self.tic = self.getMillis()		
+	
+	def log(self):
+		print "Ran for " + str(self.getMillis() - self.tic) + " milliseconds"
+		
+	def tic(self, strid):
+		pass
+	
+	def toc(self, strid):
+		pass
+	
+	def __del__(self):		
+		self.log();
+		
+	
 
 	
 class ConstellationFeatureManager(NullFeatureManager):
@@ -102,41 +122,46 @@ class ConstellationFeatureManager(NullFeatureManager):
 	grids_r = None
 	data_shape = None	
 	profiler = None
+	cache_index = -1
 	
 	def calculate_constellation(self, g, n, ctr):
 		self.profiler.tic("constellation")
 		if ctr is None:
-			ctr = g.node[n][self.default_cache][1][0:1]
+			ctr = g.node[n][self.default_cache][self.cache_index]
 		
 		if len(ctr) > 2:
-			ctr = ctr[0:1]
+			ctr = ctr[0:2]
 		
 		# nbd_idx indexes all nodes that share an edge with this one (i hope)	
-		nbd_idx = g[n].keys()
-		# init some arrays
-		nbd_offset = zeros([len(g[n].keys()), 2])
-		nbd_size = zeros([len(g[n].keys()), 1])
+		nbd_idx = array(g[n].keys())
+		# init some arrays		
+		nbd_size = zeros([len(g[n].keys())])
+		nbd_offset = zeros([min(len(g[n].keys()), self.consize), 2])
 		
-		# collect centroid offsets and sizes
-		for i in arange(0,len(nbd_idx)):
-			neighbor = nbd_idx[i]
-			n_ctr = g.node[neighbor][self.default_cache][1][0:1]
-			nbd_offset[i,:] = ctr - n_ctr
-			nbd_size[i] = len(g.node[neighbor]['extent'])
+		# collect centroid sizes
+		for i, m in enumerate(nbd_idx):			
+			nbd_size[i] = len(g.node[m]['extent'])
+		
+		
+		# Sort sizes, keep only the first <consize> largest
+		i_sort_sz = argsort(nbd_size)
+		if len(i_sort_sz) > self.consize:
+			i_sort_sz = i_sort_sz[0:self.consize]
+			nbd_idx = nbd_idx[i_sort_sz]
+		
+		# Calculate offsets
+		for i, m in enumerate(nbd_idx):
+			n_ctr = g[n][m][self.default_cache][self.cache_index][0:2]
+			nbd_offset[i,:] = n_ctr - ctr
+		
 		# sort by order around this node
 		atans = np.arctan2(nbd_offset[:,0], nbd_offset[:,1])
 		i_sort_tan = argsort(atans)
 		nbd_offset = nbd_offset[i_sort_tan,:]
 		nbd_size = nbd_size[i_sort_tan]
-			
-		# We want the first <consize> elements with which to make the constellation
-		if len(nbd_idx) >= self.consize:
-			# if there are more neighbors than consize, we want the largest <consize> of them
-			i_sort_sz = argsort(nbd_size)
-			# preserve the order
-			i_sort_sz = sort(i_sort_sz[0:self.consize])
-			nbd_offset = nbd_offset[i_sort_sz,:]
-		else:
+		nbd_idx = nbd_idx[i_sort_tan]
+
+		if len(nbd_idx) < self.consize:
 			pad = zeros((self.consize - len(nbd_idx), 2))
 			nbd_offset = concatenate((nbd_offset, pad))
 		
@@ -217,7 +242,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 			self.grids_r[i] = v
 		return None
 
-	def __init__(self, inShape, insize = 7, *args, **kwargs):
+	def __init__(self, inShape, insize = 7, index = -1, *args, **kwargs):
 		super(ConstellationFeatureManager, self).__init__()
 		self.consize = insize		
 		shape = inShape
@@ -226,6 +251,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 		self.constellation_diff = self.constellation_meansq
 		self.profiler = QuickProfiler("ConstellationProfile.txt")
 		self.dbgDict = dict()
+		self.cache_index = index
 		
 		
 	def __len__(self):
