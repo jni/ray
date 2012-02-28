@@ -14,6 +14,7 @@ def doAgglo(prob, lf, gs, fm):
 	print "creating train rag"
 	g = agglo.Rag(lf, prob, feature_manager=fm)
 	print "calculating training data"
+	#g.agglomerate(inf)
 	td, atd = g.learn_agglomerate(gs, fm)
 	ft, l, w, h = td
 	rf = classify.RandomForest()
@@ -26,6 +27,33 @@ def doAgglo(prob, lf, gs, fm):
 	testlf = imio.read_h5_stack('im/testlabel5.h5')
 	
 	print "creating test rag"
-	#gtest = agglo.Rag(testlf, testprob, lpf)	
+	gtest = agglo.Rag(testlf, testprob, lpf, feature_manager=fm)	
+	gtest.agglomerate(inf)	
 	
-	return g, testprob, testlf, td, atd, lpf
+	
+	return g, gtest
+	
+def go(fmName, doComposite = True):	
+	if fmName == "moments":
+		fm = classify.MomentsFeatureManager()
+	elif fmName == "histogram":
+		fm = classify.HistogramFeatureManager()
+	elif fmName == "convex":
+		fm = classify.ConvexHullFeatureManager()
+	elif fmName == "orientation":
+		fm = classify.OrientationFeatureManager()
+	else:
+		"Unrecognized name"
+		return None, None
+	prob, lf, gs, cfm, cffm = dosetup(fm)
+	
+	if doComposite:
+		g_fm, g_fm_test = doAgglo(prob, lf, gs, cffm)
+		imio.write_h5_stack(g_fm.get_ucm(), 'im/' + fmName + '_composite_ucm.h5');
+		imio.write_h5_stack(g_fm.get_ucm(), 'im/' + fmName + '_composite_ucm_test.h5');
+	else:
+		g_fm, g_fm_test = doAgglo(prob, lf, gs, fm)
+		imio.write_h5_stack(g_fm.get_ucm(), 'im/' + fmName + '_ucm.h5');
+		imio.write_h5_stack(g_fm.get_ucm(), 'im/' + fmName + '_ucm_test.h5');
+	
+	return g_fm, g_fm_test
