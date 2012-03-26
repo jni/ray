@@ -23,8 +23,8 @@ from scipy import arange
 from scipy.misc.common import factorial
 from scipy.ndimage import binary_erosion
 
-#from IPython.Debugger import Tracer
-#debug_here = Tracer()
+from IPython.Debugger import Tracer
+keyboard = Tracer()
 
 # local imports
 import morpho
@@ -32,10 +32,6 @@ import iterprogress as ip
 from imio import read_h5_stack, write_h5_stack, write_image_stack
 from adaboost import AdaBoost
 from classify import NullFeatureManager
-
-from IPython.Debugger import Tracer
-
-keyboard = Tracer()
 
 class QuickProfiler(object):
 	ticd = None
@@ -115,14 +111,18 @@ class NullProfiler(QuickProfiler):
 		self.log();
 		
 	
+	
+
 
 	
 class ConstellationFeatureManager(NullFeatureManager):
-	# Pre-define some instance variables
+	# Pre-define some instance variables	
 	grids_r = None
 	data_shape = None	
 	profiler = None
 	cache_index = -1
+	
+	initGrids = None
 	
 	def calculate_constellation(self, g, n, ctr):
 		self.profiler.tic("constellation")
@@ -133,16 +133,21 @@ class ConstellationFeatureManager(NullFeatureManager):
 			ctr = ctr[0:2]
 		
 		# nbd_idx indexes all nodes that share an edge with this one (i hope)	
-		nbd_idx = array(g[n].keys())
+		nbd_idx = array([m for m in g[n].keys() if m != g.boundary_body])
+
 		# init some arrays		
-		nbd_size = zeros([len(g[n].keys())])
-		nbd_offset = zeros([min(len(g[n].keys()), self.consize), 2])
+		nbd_size = zeros([len(nbd_idx)])
 		
 		# collect centroid sizes
-		for i, m in enumerate(nbd_idx):			
-			nbd_size[i] = len(g.node[m]['extent'])
-		
-		
+		for i, m in enumerate(nbd_idx):
+			if g[n][m][self.default_cache][self.cache_index][0] > 0:
+				nbd_size[i] = len(g.node[m]['extent'])
+		nbd_idx = nbd_idx[nbd_size > 0]
+		nbd_size = nbd_size[nbd_size > 0]
+
+		if len(nbd_idx) <= 0:
+			return zeros([self.consize, 2])
+				
 		# Sort sizes, keep only the first <consize> largest
 		i_sort_sz = argsort(nbd_size)
 		if len(i_sort_sz) > self.consize:
@@ -150,8 +155,10 @@ class ConstellationFeatureManager(NullFeatureManager):
 			nbd_idx = nbd_idx[i_sort_sz]
 		
 		# Calculate offsets
+		nbd_offset = zeros([min(len(nbd_idx), self.consize), 2])
 		for i, m in enumerate(nbd_idx):
-			n_ctr = g[n][m][self.default_cache][self.cache_index][0:2]
+			#n_ctr = g[n][m][self.default_cache][self.cache_index][0:2]
+			n_ctr = g.node[m][self.default_cache][self.cache_index][0:2]
 			nbd_offset[i,:] = n_ctr - ctr
 		
 		# sort by order around this node
@@ -166,7 +173,9 @@ class ConstellationFeatureManager(NullFeatureManager):
 			nbd_offset = concatenate((nbd_offset, pad))
 		
 		self.profiler.toc("constellation")	
-			
+		
+		#print nbd_idx
+		
 		return nbd_offset
 	
 	def z_extent(self, idxs):
@@ -219,8 +228,11 @@ class ConstellationFeatureManager(NullFeatureManager):
 				self.profiler.toc("zoverlap")				
 			return float(zcnt) / float(norm)
 
-	def __makeMeshGrids(self):
-		shape = self.data_shape
+	def __nullFunction(self, *args):
+		pass
+	
+	def __makeMeshGrids(self, g):
+		shape = g.watershed.shape
 		#xGrid, yGrid = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]))
 		#self.xGrid_r = xGrid.ravel()
 		#self.yGrid_r = yGrid.ravel()
@@ -240,17 +252,17 @@ class ConstellationFeatureManager(NullFeatureManager):
 			v = np.tile(v,rvect)
 			v = v.ravel()
 			self.grids_r[i] = v
-		return None
+		self.initGrids = self.__nullFunction
+		return
 
 	def __init__(self, inShape, insize = 7, index = -1, *args, **kwargs):
 		super(ConstellationFeatureManager, self).__init__()
 		self.consize = insize		
 		shape = inShape
 		self.data_shape = inShape
-		self.__makeMeshGrids()
+		self.initGrids = self.__makeMeshGrids		
 		self.constellation_diff = self.constellation_meansq
-		self.profiler = QuickProfiler("ConstellationProfile.txt")
-		self.dbgDict = dict()
+		self.profiler = QuickProfiler("ConstellationProfile.txt")		
 		self.cache_index = index
 		
 		
@@ -267,6 +279,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 		return array([x, y])
 
 	def create_node_cache(self, g, n):
+		self.initGrids(g)
 		self.profiler.tic("createnode")
 		node_idxs = array(list(g.node[n]['extent']))
 		ret =  np.append(self.calculate_centroid(node_idxs), self.z_extent(node_idxs))
@@ -275,6 +288,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 		return ret
 
 	def create_edge_cache(self, g, n1, n2):
+		self.initGrids(g)
 		self.profiler.tic("createedge")		
 		
 		if self.default_cache in g.node[n1]:
@@ -293,9 +307,7 @@ class ConstellationFeatureManager(NullFeatureManager):
 		self.profiler.toc("createedge")		
 		
 		ret = array([zovlp])
-		
-		if not 'cec' in self.dbgDict.keys():
-			self.dbgDict['cec'] = ret
+				
 		return ret
 
 	# Super way not efficient, but simpler for testing this thing
@@ -316,17 +328,14 @@ class ConstellationFeatureManager(NullFeatureManager):
 		if cache is None: 
 			cache = g.node[n][self.default_cache]		
 		ret = self.calculate_constellation(g, n, cache).ravel()
-		if not 'cnf' in self.dbgDict.keys():
-			self.dbgDict['cnf'] = ret
-		return ret
+		return array([])
 
 	def compute_edge_features(self, g, n1, n2, cache=None):		
 		
 		if cache is None:
-			cache = g[n1][n2][self.default_cache]
-		if not 'cef' in self.dbgDict.keys():
-			self.dbgDict['cef'] = cache		
-		return cache
+			cache = g[n1][n2][self.default_cache]		
+		# return cache
+		return array([])
 
 	def compute_difference_features(self,g, n1, n2, cache1=None, cache2=None):		
 		if cache1 is None:
@@ -340,7 +349,4 @@ class ConstellationFeatureManager(NullFeatureManager):
 		
 		ret = array([self.constellation_diff(con1, con2)])
 		
-		if not 'cdf' in self.dbgDict.keys():
-			self.dbgDict['cdf'] = ret
-		
-		return ret
+		return array([])
