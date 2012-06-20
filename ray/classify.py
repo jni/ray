@@ -124,7 +124,7 @@ class MomentsFeatureManager(NullFeatureManager):
         return (values ** arange(self.nmoments+1)).sum(axis=0).T
 
     def create_node_cache(self, g, n):
-        node_idxs = list(g.node[n]['extent'])
+        node_idxs = g.node[n]['extent']
         if self.oriented:
             ar = g.max_probabilities_r
         else:
@@ -132,7 +132,7 @@ class MomentsFeatureManager(NullFeatureManager):
         return self.compute_moment_sums(ar, node_idxs)
 
     def create_edge_cache(self, g, n1, n2):
-        edge_idxs = list(g[n1][n2]['boundary'])
+        edge_idxs = g[n1][n2]['boundary']
         if self.oriented:
             ar = g.oriented_probabilities_r
         else:
@@ -239,7 +239,7 @@ class OrientationFeatureManager(NullFeatureManager):
     def create_node_cache(self, g, n):
         # Get subscripts of extent (morpho.unravel_index was slow)
         M = zeros_like(g.watershed); 
-        M.ravel()[list(g.node[n]['extent'])] = 1 
+        M.ravel()[g.node[n]['extent']] = 1 
         ind = array(nonzero(M)).T
         
         # Get second moment matrix
@@ -259,7 +259,7 @@ class OrientationFeatureManager(NullFeatureManager):
     def create_edge_cache(self, g, n1, n2):
         # Get subscripts of extent (morpho.unravel_index was slow)
         M = zeros_like(g.watershed); 
-        M.ravel()[list(g[n1][n2]['boundary'])] = 1 
+        M.ravel()[g[n1][n2]['boundary']] = 1 
         ind = array(nonzero(M)).T
         
         # Get second moment matrix
@@ -370,9 +370,9 @@ class ConvexHullFeatureManager(NullFeatureManager):
     def convex_hull_ind(self,g,n1,n2=None):
         M = zeros_like(g.watershed); 
         if n2 is not None:
-            M.ravel()[list(g[n1][n2]['boundary'])]=1
+            M.ravel()[g[n1][n2]['boundary']]=1
         else:
-            M.ravel()[list(g.node[n1]['extent'])] = 1
+            M.ravel()[g.node[n1]['extent']] = 1
         M = M - binary_erosion(M) #Only need border
         ind = array(nonzero(M)).T
         return ind
@@ -543,7 +543,7 @@ class HistogramFeatureManager(NullFeatureManager):
         return h, ps
 
     def create_node_cache(self, g, n):
-        node_idxs = list(g.node[n]['extent'])
+        node_idxs = g.node[n]['extent']
         if self.oriented:
             ar = g.max_probabilities_r
         else:
@@ -552,7 +552,7 @@ class HistogramFeatureManager(NullFeatureManager):
         return self.histogram(ar[node_idxs,:])
 
     def create_edge_cache(self, g, n1, n2):
-        edge_idxs = list(g[n1][n2]['boundary'])
+        edge_idxs = g[n1][n2]['boundary']
         if self.oriented:
             ar = g.oriented_probabilities_r
         else:
@@ -742,7 +742,7 @@ class CompositeFeatureManager(NullFeatureManager):
         
     
 def mean_and_sem(g, n1, n2):
-    bvals = g.probabilities_r[list(g[n1][n2]['boundary'])]
+    bvals = g.probabilities_r[g[n1][n2]['boundary']]
     return array([mean(bvals), sem(bvals)]).reshape(1,2)
 
 def mean_sem_and_n_from_cache_dict(d):
@@ -917,7 +917,7 @@ def boundary_overlap_threshold(boundary_idxs, gt, tol_false, tol_true):
 def make_thresholded_boundary_overlap_loss(tol_false, tol_true):
     """Return a merge loss function based on boundary overlaps."""
     def loss(g, n1, n2, gt):
-        boundary_idxs = list(g[n1][n2]['boundary'])
+        boundary_idxs = g[n1][n2]['boundary']
         return \
             boundary_overlap_threshold(boundary_idxs, gt, tol_false, tol_true)
     return loss
@@ -934,7 +934,7 @@ def label_merges(g, merge_history, feature_map_function, gt, loss_function):
         n1, n2 = nodes
         features[i,:] = feature_map_function(g, n1, n2)
         labels[i] = loss_function(g, n1, n2, gt)
-        labeled_image.ravel()[list(g[n1][n2]['boundary'])] = 2+labels[i]
+        labeled_image.ravel()[g[n1][n2]['boundary']] = 2+labels[i]
         g.merge_nodes(n1,n2)
     return features, labels, labeled_image
 
