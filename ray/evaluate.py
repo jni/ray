@@ -10,7 +10,13 @@ from scipy.sparse import coo_matrix
 from scipy.ndimage.measurements import label
 from scipy.spatial.distance import pdist, cdist, squareform
 from scipy.misc import comb as nchoosek
-from sklearn.metrics import precision_recall_curve
+from _metrics import continuous_confusion
+
+def precision_recall_curve(y_true, y_pred):
+    s = np.argsort(y_pred)
+    y_true, y_pred = y_true[s], y_pred[s]
+    t, tp, tn, fp, fn = continuous_confusion(y_true, y_pred).T
+    return tp/(tp+fp), tp/(tp+fn), t
 
 def bin_values(a, bins=255):
     if len(unique(a)) < 2*bins:
