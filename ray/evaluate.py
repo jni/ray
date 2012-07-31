@@ -14,7 +14,8 @@ from _metrics import continuous_confusion
 
 def precision_recall_curve(y_true, y_pred):
     s = np.argsort(y_pred)
-    y_true, y_pred = y_true[s], y_pred[s]
+    y_true = y_true[s].astype(np.float64)
+    y_pred = y_pred[s].astype(float)
     t, tp, tn, fp, fn = continuous_confusion(y_true, y_pred).T
     return tp/(tp+fp), tp/(tp+fn), t
 
