@@ -1023,8 +1023,22 @@ def get_edge_coordinates(g, n1, n2, arbitrary=False):
         idx = boundary.pop(); boundary.add(idx)
         coords = unravel_index(idx, g.watershed.shape)
     else:
+        ext1, ext2 = [
+            unravel_index(list(g.node[n]['extent']), g.watershed.shape) 
+            for n in [n1, n2]]
+        ext1_cts, ext2_cts = [map(bincount, ext) for ext in [ext1, ext2]]
         boundary_idxs = unravel_index(list(boundary), g.watershed.shape)
         coords = [bincount(dimcoords).argmax() for dimcoords in boundary_idxs]
+        # sometimes the edge is perpendicular to the cut plane, and only one
+        # segment is visible. Below, we attempt to look at cut planes above and
+        # below the current one if one of the segments is not visible.
+        for dim, coord in enumerate(coords):
+            if ext1_cts[dim][coord] == 0 or ext2_cts[dim][coord] == 0:
+                c1, c_1 = coord+1, coord-1
+                if ext1_cts[dim][c1] > 0 and ext2_cts[dim][c1] > 0:
+                    coords[dim] = c1
+                else:
+                    coords[dim] = c_1
     return array(coords) - g.pad_thickness
 
 ############################
