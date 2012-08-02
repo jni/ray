@@ -14,7 +14,7 @@ from numpy import array, mean, zeros, zeros_like, uint8, int8, where, unique, \
     median, exp, ceil, dot, log2, float, ones, arange, inf, flatnonzero, \
     intersect1d, dtype, squeeze, sqrt, reshape, setdiff1d, argmin, sign, \
     concatenate, nan, __version__ as numpyversion, unravel_index, bincount
-import numpy
+import numpy as np
 from scipy.stats import sem
 from scipy.sparse import lil_matrix
 from scipy.ndimage import generate_binary_structure, iterate_structure, \
@@ -1023,18 +1023,27 @@ def get_edge_coordinates(g, n1, n2, arbitrary=False):
         idx = boundary.pop(); boundary.add(idx)
         coords = unravel_index(idx, g.watershed.shape)
     else:
-        ext1, ext2 = [
-            unravel_index(list(g.node[n]['extent']), g.watershed.shape) 
-            for n in [n1, n2]]
-        ext1_cts, ext2_cts = [map(bincount, ext) for ext in [ext1, ext2]]
         boundary_idxs = unravel_index(list(boundary), g.watershed.shape)
         coords = [bincount(dimcoords).argmax() for dimcoords in boundary_idxs]
         # sometimes the edge is perpendicular to the cut plane, and only one
         # segment is visible. Below, we attempt to look at cut planes above and
         # below the current one if one of the segments is not visible.
+        ext1, ext2 = [
+            unravel_index(list(g.node[n]['extent']), g.watershed.shape) 
+            for n in [n1, n2]]
+        ext1_cts, ext2_cts = [map(bincount, ext) for ext in [ext1, ext2]]
+        maxlens = [max(a, b)+1 for a, b in 
+            zip(map(len, ext1_cts), map(len, ext2_cts))]
+        ext1_cts, ext2_cts = [
+            [np.resize(cts, (maxlen,)) for cts, maxlen in zip(extcts, maxlens)]
+            for extcts in [ext1_cts, ext2_cts]]
         for dim, coord in enumerate(coords):
             if ext1_cts[dim][coord] == 0 or ext2_cts[dim][coord] == 0:
                 c1, c_1 = coord+1, coord-1
+                if c1 > g.watershed.shape[dim] - g.pad_thickness:
+                    c1 = coord
+                elif c_1 < g.pad_thickness:
+                    c_1 = coord
                 if ext1_cts[dim][c1] > 0 and ext2_cts[dim][c1] > 0:
                     coords[dim] = c1
                 else:
